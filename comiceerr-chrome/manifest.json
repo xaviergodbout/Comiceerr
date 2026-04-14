@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Comiceer",
+  "version": "1.0",
+  "description": "Comiceer seamlessly adds a GetComics download link to your League of Comic Geeks collection.",
+  "icons": {
+    "48": "comiceer-icon_48.png",
+    "128": "comiceer-icon_128.png"
+  },
+  "permissions": [
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://*.leagueofcomicgeeks.com/*",
+    "*://*.getcomics.org/*",
+    "*://getcomics.org/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["*://leagueofcomicgeeks.com/comic/*"],
+      "js": ["content.js"]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
