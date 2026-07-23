@@ -46,13 +46,12 @@ if (titleQuery) {
     // Send the extracted title to the background script
     chrome.runtime.sendMessage({ action: "searchGetComics", query: titleQuery }, (response) => {
         if (response && response.found) {
-            // Pass BOTH URLs to the button injection function
-            injectDownloadButtons(response.downloadUrl, response.postUrl);
+            injectDownloadButtons(response.postUrl);
         }
     });
 }
 
-function injectDownloadButtons(downloadUrl, postUrl) {
+function injectDownloadButtons(postUrl) {
     // 1. Updated target: Find the summary row in the overview tab
     const buttonContainer = document.querySelector('#summary .listing-content');
 
@@ -71,11 +70,12 @@ function injectDownloadButtons(downloadUrl, postUrl) {
     }
 
     // --- 1. Main Download Button ---
-    const btnMain = document.createElement('a');
-    btnMain.href = downloadUrl;
+    const btnMain = document.createElement('button');
+    btnMain.type = "button";
     btnMain.innerText = "DOWNLOAD";
-    btnMain.target = "_blank";
     btnMain.className = "btn btn-gradient";
+    btnMain.disabled = false;
+    btnMain.title = "Download directly with Firefox";
     
     btnMain.style.cssText = `
         background-color: #5cb85c;
@@ -91,18 +91,50 @@ function injectDownloadButtons(downloadUrl, postUrl) {
         border: none;
         border-radius: 20px;
         padding: 8px 24px;
+        cursor: pointer;
         transition: background-color 0.2s ease-in-out;
     `;
     
     btnMain.addEventListener('mouseover', () => btnMain.style.backgroundColor = '#4cae4c');
     btnMain.addEventListener('mouseout', () => btnMain.style.backgroundColor = '#5cb85c');
-    btnMain.addEventListener('click', markAsHaveIt);
+    btnMain.addEventListener('click', (event) => {
+        event.preventDefault();
+
+        if (btnMain.disabled) {
+            return;
+        }
+
+        btnMain.disabled = true;
+        btnMain.innerText = "STARTING…";
+        setDownloadStatus("Starting download…", "#666666");
+
+        chrome.runtime.sendMessage({
+            action: "downloadComic",
+            postUrl
+        }, (response) => {
+            const messageError = chrome.runtime.lastError;
+
+            if (messageError || !response || !response.started) {
+                btnMain.disabled = false;
+                btnMain.innerText = "DOWNLOAD";
+                setDownloadStatus(
+                    "Download could not start. Use ↗ to try another GetComics mirror.",
+                    "#b42318"
+                );
+                return;
+            }
+
+            btnMain.innerText = "PREPARING…";
+            setDownloadStatus("Preparing native GetComics download…", "#666666");
+        });
+    });
 
     // --- 2. External link (🡕) Post Page Button ---
     const btnPlus = document.createElement('a');
-    btnPlus.href = postUrl || downloadUrl;
+    btnPlus.href = postUrl;
     btnPlus.innerText = "🡕";
     btnPlus.target = "_blank";
+    btnPlus.rel = "noopener";
     btnPlus.className = "btn btn-gradient";
     btnPlus.title = "View all download mirrors on GetComics";
     
@@ -129,6 +161,43 @@ function injectDownloadButtons(downloadUrl, postUrl) {
 
     btnGroup.appendChild(btnMain);
     btnGroup.appendChild(btnPlus);
+
+    const downloadStatus = document.createElement('span');
+    downloadStatus.setAttribute('role', 'status');
+    downloadStatus.setAttribute('aria-live', 'polite');
+    downloadStatus.style.cssText = `
+        margin-left: 10px;
+        font-size: 13px;
+        font-weight: 600;
+    `;
+    btnGroup.appendChild(downloadStatus);
+
+    function setDownloadStatus(message, color) {
+        downloadStatus.textContent = message;
+        downloadStatus.style.color = color;
+    }
+
+    chrome.runtime.onMessage.addListener((message) => {
+        if (message.postUrl !== postUrl) {
+            return;
+        }
+
+        if (message.action === "comicDownloadFailed") {
+            btnMain.disabled = false;
+            btnMain.innerText = "DOWNLOAD";
+            setDownloadStatus(
+                "GetComics' file server failed. Use ↗ to try another mirror.",
+                "#b42318"
+            );
+        } else if (message.action === "comicDownloadStarted") {
+            btnMain.disabled = false;
+            btnMain.innerText = "DOWNLOAD";
+            markAsHaveIt();
+            setDownloadStatus("Download started.", "#3c763d");
+        } else if (message.action === "comicDownloadComplete") {
+            setDownloadStatus("Download complete.", "#3c763d");
+        }
+    });
 
     if (buttonContainer) {
         // Insert right at the top of the summary content
