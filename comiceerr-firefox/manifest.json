@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Comiceerr",
-  "version": "1.3",
+  "version": "1.4",
   "description": "Comiceerr seamlessly adds a GetComics download link to your League of Comic Geeks collection.",
   "icons": {
     "48": "comiceer-icon_48.png",

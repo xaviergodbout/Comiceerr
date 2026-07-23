@@ -7,7 +7,7 @@ let nextBridgeId = 1;
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "searchGetComics") {
-        handleSearch(request.query).then(sendResponse);
+        handleSearch(request.comic).then(sendResponse);
         return true;
     }
 
@@ -89,8 +89,165 @@ function isTrustedGetComicsUrl(url, requiredPathPrefix = "/") {
     );
 }
 
-async function handleSearch(query) {
+function decodeHtmlEntities(value) {
+    const namedEntities = {
+        amp: "&",
+        apos: "'",
+        hellip: "…",
+        laquo: "«",
+        ldquo: "“",
+        lsquo: "‘",
+        mdash: "—",
+        ndash: "–",
+        quot: '"',
+        raquo: "»",
+        rdquo: "”",
+        rsquo: "’"
+    };
+
+    return value
+        .replace(/&#x([0-9a-f]+);/gi, (_match, code) => (
+            String.fromCodePoint(Number.parseInt(code, 16))
+        ))
+        .replace(/&#(\d+);/g, (_match, code) => (
+            String.fromCodePoint(Number.parseInt(code, 10))
+        ))
+        .replace(/&([a-z]+);/gi, (match, name) => (
+            namedEntities[name.toLowerCase()] || match
+        ));
+}
+
+function normalizeMatchText(value) {
+    return decodeHtmlEntities(value)
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/&/g, " and ")
+        .replace(/[’']/g, "")
+        .replace(/[^a-z0-9]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function normalizeIssueNumber(value) {
+    return String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/^0+(?=\d)/, "");
+}
+
+function parseTitleIdentity(title) {
+    let cleanTitle = decodeHtmlEntities(title).replace(/\s+/g, " ").trim();
+    const yearMatch = cleanTitle.match(
+        /\((\d{4})(?:\s*[-–—]\s*(?:\d{4}|present))?\)\s*$/i
+    );
+    const releaseYear = yearMatch ? Number(yearMatch[1]) : null;
+
+    if (yearMatch) {
+        cleanTitle = cleanTitle.slice(0, yearMatch.index).trim();
+    }
+
+    const issueMatch = cleanTitle.match(/^(.*?)\s*#\s*([a-z0-9.-]+)\s*$/i);
+
+    return {
+        cleanTitle,
+        issueNumber: issueMatch ? normalizeIssueNumber(issueMatch[2]) : null,
+        releaseYear,
+        seriesTitle: issueMatch
+            ? normalizeMatchText(issueMatch[1])
+            : normalizeMatchText(cleanTitle)
+    };
+}
+
+function extractSearchCandidates(searchText, searchUrl) {
+    const candidates = [];
+    const headingRegex = /<h[1-2]\b[^>]*class=["'][^"']*\bpost-title\b[^"']*["'][^>]*>([\s\S]*?)<\/h[1-2]>/gi;
+    let headingMatch;
+
+    while ((headingMatch = headingRegex.exec(searchText)) !== null) {
+        const headingHtml = headingMatch[1];
+        const linkMatch = headingHtml.match(
+            /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i
+        );
+
+        if (!linkMatch) {
+            continue;
+        }
+
+        const postUrl = new URL(
+            linkMatch[1].replace(/&amp;/gi, "&"),
+            searchUrl
+        );
+        if (!isTrustedGetComicsUrl(postUrl)) {
+            continue;
+        }
+
+        const title = decodeHtmlEntities(
+            linkMatch[2].replace(/<[^>]+>/g, " ")
+        ).replace(/\s+/g, " ").trim();
+
+        candidates.push({
+            ...parseTitleIdentity(title),
+            postUrl: postUrl.href,
+            title
+        });
+    }
+
+    return candidates;
+}
+
+function findMatchingPost(candidates, comic) {
+    if (!comic || typeof comic.title !== "string") {
+        return null;
+    }
+
+    const target = parseTitleIdentity(comic.title);
+    const targetIssue = normalizeIssueNumber(
+        comic.issueNumber || target.issueNumber
+    );
+    const targetSeries = normalizeMatchText(
+        comic.seriesTitle || target.seriesTitle
+    );
+    const targetYear = Number(comic.releaseYear) || null;
+
+    const matchingUrls = new Set(
+        candidates
+            .filter((candidate) => {
+                if (candidate.seriesTitle !== targetSeries) {
+                    return false;
+                }
+
+                if (targetIssue && candidate.issueNumber !== targetIssue) {
+                    return false;
+                }
+
+                if (!targetIssue &&
+                    normalizeMatchText(candidate.cleanTitle) !==
+                    normalizeMatchText(target.cleanTitle)) {
+                    return false;
+                }
+
+                return !(
+                    targetYear &&
+                    candidate.releaseYear &&
+                    targetYear !== candidate.releaseYear
+                );
+            })
+            .map((candidate) => candidate.postUrl)
+    );
+
+    return matchingUrls.size === 1
+        ? Array.from(matchingUrls)[0]
+        : null;
+}
+
+async function handleSearch(comic) {
     try {
+        if (!comic || typeof comic.title !== "string" || !comic.title.trim()) {
+            return { found: false };
+        }
+
+        const query = comic.title.replace(/#/g, " ");
         const searchUrl = `https://getcomics.org/?s=${encodeURIComponent(query)}`;
         const searchRes = await fetch(searchUrl);
 
@@ -99,19 +256,12 @@ async function handleSearch(query) {
         }
 
         const searchText = await searchRes.text();
-        const postLinkRegex = /<h[1-2][^>]*class=["'][^"']*\bpost-title\b[^"']*["'][^>]*>\s*<a[^>]*href=["']([^"']+)["']/i;
-        const match = searchText.match(postLinkRegex);
+        const candidates = extractSearchCandidates(searchText, searchUrl);
+        const postUrl = findMatchingPost(candidates, comic);
 
-        if (!match) {
-            return { found: false };
-        }
-
-        const postUrl = new URL(match[1].replace(/&amp;/gi, "&"), searchUrl);
-        if (!isTrustedGetComicsUrl(postUrl)) {
-            throw new Error("GetComics search returned an unexpected post URL");
-        }
-
-        return { found: true, postUrl: postUrl.href };
+        return postUrl
+            ? { found: true, postUrl }
+            : { found: false };
     } catch (error) {
         console.error("Error connecting to GetComics:", error);
         return { found: false };

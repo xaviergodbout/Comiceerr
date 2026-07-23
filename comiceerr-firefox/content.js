@@ -1,26 +1,11 @@
-// Extract the comic name from the URL slug
-// Example: /comic/9380901/absolute-batman-1 -> "absolute batman 1"
-
-// Extract the comic name from the URL slug and clean it up for GetComics
-function extractComicTitle() {
+function extractFallbackTitle() {
     const urlParts = window.location.pathname.split('/');
     if (urlParts.length >= 4 && urlParts[1] === 'comic') {
-        let slug = urlParts[3]; 
-
-        // 1. Strip out common format tags at the end of the URL (-hc, -tpb, -tp, -gn, -sc, -dlx)
+        let slug = urlParts[3];
         slug = slug.replace(/-(hc|tpb|tp|gn|sc|dlx)$/i, '');
-
-        // 2. Strip out cover variants (e.g., -cover-a, -variant, -blank-variant)
         slug = slug.replace(/-(cover|variant|cv)-?[a-z0-9-]*$/i, '');
-
-        // 3. Strip out the "pt" part or issue part if formatted weirdly at the end
         slug = slug.replace(/-pt-[0-9]+$/i, '');
-
-        // 4. Replace hyphens with spaces to format the search query
         let query = slug.replace(/-/g, ' ');
-
-        // 5. Expand common comic abbreviations
-        // Add any other abbreviations you run into down the road here!
         const abbreviations = {
             "tmnt": "teenage mutant ninja turtles",
             "asm": "amazing spider man",
@@ -28,9 +13,7 @@ function extractComicTitle() {
             "jla": "justice league of america"
         };
 
-        // Loop through the dictionary and replace abbreviations with full titles
         for (const [abbr, fullTitle] of Object.entries(abbreviations)) {
-            // \\b ensures we only replace the exact word (so "tmnts" wouldn't break)
             const regex = new RegExp(`\\b${abbr}\\b`, 'gi');
             query = query.replace(regex, fullTitle);
         }
@@ -40,11 +23,66 @@ function extractComicTitle() {
     return null;
 }
 
-const titleQuery = extractComicTitle();
+function extractReleaseDate() {
+    const releaseLink = Array.from(
+        document.querySelectorAll('a[href*="/comics/new-comics/"]')
+    ).find((link) => (
+        /\/comics\/new-comics\/\d{4}\/\d{2}\/\d{2}\/?$/.test(
+            link.getAttribute('href') || ''
+        )
+    ));
 
-if (titleQuery) {
-    // Send the extracted title to the background script
-    chrome.runtime.sendMessage({ action: "searchGetComics", query: titleQuery }, (response) => {
+    if (!releaseLink) {
+        return null;
+    }
+
+    const match = (releaseLink.getAttribute('href') || '').match(
+        /\/comics\/new-comics\/(\d{4})\/(\d{2})\/(\d{2})/
+    );
+    return match ? `${match[1]}-${match[2]}-${match[3]}` : null;
+}
+
+function isReleaseDateInFuture(releaseDate, now = new Date()) {
+    if (!releaseDate) {
+        return false;
+    }
+
+    const releaseKey = Number(releaseDate.replaceAll('-', ''));
+    const todayKey = (
+        now.getFullYear() * 10000 +
+        (now.getMonth() + 1) * 100 +
+        now.getDate()
+    );
+    return releaseKey > todayKey;
+}
+
+function buildComicMetadata() {
+    const heading = document.querySelector('h1');
+    const title = (heading && heading.textContent || '').trim() || extractFallbackTitle();
+
+    if (!title) {
+        return null;
+    }
+
+    const issueMatch = title.match(/^(.*?)\s*#\s*([a-z0-9.-]+)\s*$/i);
+    const releaseDate = extractReleaseDate();
+
+    return {
+        issueNumber: issueMatch ? issueMatch[2] : null,
+        releaseDate,
+        releaseYear: releaseDate ? Number(releaseDate.slice(0, 4)) : null,
+        seriesTitle: issueMatch ? issueMatch[1].trim() : title,
+        title
+    };
+}
+
+const comicMetadata = buildComicMetadata();
+
+if (comicMetadata && !isReleaseDateInFuture(comicMetadata.releaseDate)) {
+    chrome.runtime.sendMessage({
+        action: "searchGetComics",
+        comic: comicMetadata
+    }, (response) => {
         if (response && response.found) {
             injectDownloadButtons(response.postUrl);
         }
