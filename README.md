@@ -10,4 +10,4 @@
 
 From Firefox Add-On: https://addons.mozilla.org/en-US/firefox/addon/comiceerr/
 
-From Github: https://github.com/xaviergodbout/Comiceerr/releases/tag/Firefox
+From Github: https://github.com/xaviergodbout/Comiceerr/releases
